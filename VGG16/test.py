@@ -9,8 +9,9 @@ import cPickle as pickle
 import os
 import matplotlib.pyplot as plt
 from tensorflow.contrib import slim
+import matplotlib.pyplot as plt
 
-model_dir = "../model/vgg_v1"
+model_dir = "../model/vgg_v2"
 class_num = 10
 image_size = 32
 img_channels = 3
@@ -23,6 +24,7 @@ momentum_rate = 0.9
 log_save_path = '../vgg_16_logs'
 model_save_path = '../model/vgg_v2'
 data_dir = '../data/cifar-10-batches-py'
+save_dir = '../data/result'
 
 def unpickle(file):
     with open(file, 'rb') as fo:
@@ -180,7 +182,7 @@ if __name__ == '__main__':
     train_x, train_y, test_x, test_y = prepare_data()
     train_x, test_x = data_preprocessing(train_x, test_x)
 
-    print type(test_x), type(test_y)
+    # print type(test_x), type(test_y)
 
     # define placeholder x, y_ , keep_prob, learning_rate
     x = tf.Variable(tf.zeros((1, 32, 32, 3)), name="train_x")
@@ -289,99 +291,149 @@ if __name__ == '__main__':
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="accuracy")
 
 
-    print "start testing"
+    # print "start testing"
     with tf.Session() as sess:
         print "load graph"
         exclude = ['train_x']
         variables_to_restore = slim.get_variables_to_restore(exclude=exclude)
-        sess.run(tf.global_variables_initializer())
+        # sess.run(tf.global_variables_initializer())
         saver = tf.train.Saver(variables_to_restore)
         saver.restore(sess, tf.train.latest_checkpoint(model_dir))
         print "load finished"
 
         graph = tf.get_default_graph()
 
+        x_img = tf.placeholder(tf.float32, (1, 32, 32, 3))
+        x_hat = x
+        assign_op = tf.assign(x_hat, x_img)
 
+        adv_lr = tf.placeholder(tf.float32, (), name="adv_lr")
+        # y_hat = tf.placeholder(tf.int32, (), name="y_hat")
+        #
+        # labels = tf.one_hot(y_hat, 10)
+
+        loss = tf.nn.softmax_cross_entropy_with_logits(logits=output, labels=y_)
+        optim_step = tf.train.GradientDescentOptimizer(
+            adv_lr).minimize(0-loss, var_list=[x_hat])
+
+        epsilon = tf.placeholder(tf.float32, ())
+
+        below = x_img - epsilon
+        above = x_img + epsilon
+        projected = tf.clip_by_value(tf.clip_by_value(x_hat, below, above), 0, 1)
+        # projected = tf.clip_by_value(x_hat, below, above)
+        with tf.control_dependencies([projected]):
+            project_step = tf.assign(x_hat, projected)
+
+        demo_epsilon = 2.0 / 255.0  # a really small perturbation
+        demo_lr = 1e-1
+        demo_steps = 200
 
         org_labels = []
         adv_labels = []
         org_img = []
         adv_img = []
 
+        total_org_labels = []
+        total_adv_labels = []
+        total_org_img = []
+        total_adv_img = []
 
-        for i in range(len(test_x)):
+        ss_time = time.time()
+
+        count_succ = 0
+        count_fail = 0
+
+
+        for i in range(499, -1, -1):
+            print "processing img %d:" % i
+
+            print "org_loss:", sess.run(cross_entropy, feed_dict={x: [test_x[i]], y_: [test_y[i]], keep_prob: 1.0, train_flag: False})
+
+            s_time = time.time()
+
             img = test_x[i]
 
-            # prob = sess.run(probs, feed_dict={x: [img], keep_prob: 1.0, train_flag: False})[0]
-            # print "prob: ", prob
+            # demo_target = random.randint(0, 9)
+            # while demo_target == np.argmax(test_y[i]):
+            #     demo_target = random.randint(0, 9)
 
-            x_img = tf.placeholder(tf.float32, (1, 32, 32, 3))
-            x_hat = x
-            assign_op = tf.assign(x_hat, x_img)
-
-            adv_lr = tf.placeholder(tf.float32, (), name="adv_lr")
-            y_hat = tf.placeholder(tf.int32, (), name="y_hat")
-            # y_hat = tf.placeholder(tf.float32, [class_num], name="y_hat")
-            labels = tf.one_hot(y_hat, 10)
-
-            loss = tf.nn.softmax_cross_entropy_with_logits(logits=output, labels=[labels])
-            optim_step = tf.train.GradientDescentOptimizer(
-                adv_lr).minimize(loss, var_list = [x_hat])
-
-            epsilon = tf.placeholder(tf.float32, ())
-
-            below = x_img - epsilon
-            above = x_img + epsilon
-            projected = tf.clip_by_value(tf.clip_by_value(x_hat, below, above), 0, 1)
-            # projected = tf.clip_by_value(x_hat, below, above)
-            with tf.control_dependencies([projected]):
-                project_step = tf.assign(x_hat, projected)
-
-            demo_epsilon = 2.0 / 255.0  # a really small perturbation
-            demo_lr = 1e-1
-            demo_steps = 1000
-            demo_target = random.randint(0, 9)
-            while demo_target == np.argmax(test_y[i]):
-                demo_target = random.randint(0, 9)
+            # print "target", demo_target, np.argmax(test_y[i])
 
             sess.run(assign_op, feed_dict={x_img: [img]})
             # demo_target = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0], dtype="float64")
 
-            print "_y", test_y[i]
-            print "train adv"
+            # print "_y", test_y[i]
+            # print "train adv"
             for j in range(demo_steps):
                 # gradient descent step
-                adv_label, _, loss_value = sess.run(
-                    [labels, optim_step, loss],
-                    feed_dict={adv_lr: demo_lr, y_hat: demo_target, keep_prob: 1.0, train_flag: False})
+                _, loss_value = sess.run(
+                    [optim_step, loss],
+                    feed_dict={adv_lr: demo_lr, y_: [test_y[i]], keep_prob: 1.0, train_flag: False})
                 # project step
                 sess.run(project_step, feed_dict={x_img: [img], epsilon: demo_epsilon, keep_prob: 1.0, train_flag: False})
                 if (j + 1) % 10 == 0:
                     print('step %d, loss=%g' % (j + 1, loss_value))
 
-            adv = x_hat.eval()
-            print demo_target
+            adv = x_hat.eval()[0]
+            # print demo_target
 
-            prob = sess.run(probs, feed_dict={x: adv, keep_prob: 1.0, train_flag: False})[0]
+            prob = sess.run(tf.argmax(output, 1), feed_dict={x: [adv], keep_prob: 1.0, train_flag: False})
+            print "target: ", np.argmax(test_y[i]), prob[0]
 
-            print "prob", prob
-            max_target = np.argmax(prob)
-            print "max prob index", max_target
+            # print "prob", prob
+            # max_target = np.argmax(prob)
+            # print "max prob index", max_target
 
-            print "adv_label", type(adv_label), adv_label
+            # print "adv_label", type(adv_label), adv_label
 
 
-            org_labels.append(test_y[i])
-            adv_labels.append(adv_label)
-            org_img.append(test_x[i])
-            adv_img.append(adv)
+            if loss_value > 1:
+                count_succ += 1
+                org_labels.append(np.argmax(test_y[i]))
+                adv_labels.append(prob[0])
+                org_img.append(test_x[i])
+                adv_img.append(adv)
 
+                # plt.imshow(adv)
+                # plt.show()
+                # plt.imshow(test_x[i])
+                # plt.show()
+
+            else:
+                count_fail += 1
+
+            e_time = time.time()
+            print "time cost: %ds" % (e_time - s_time)
             print "--------------------------------"
-        org_labels = np.array(org_labels)
-        adv_labels = np.array(adv_labels)
-        org_img = np.array(org_img)
-        adv_img = np.array(adv_img)
-        dump_data = {"origin_lables": org_labels, "adv_labels": adv_labels, "origin_img": org_img, "adv_img": adv_img}
-        with open("test_10k_data.pk", "wb") as wb:
+
+            if i%500 == 0:
+                print "500 count:"
+                print "succ: %d, fail: %d" % (count_succ, count_fail)
+
+                dump_data = {"origin_lables": np.array(org_labels), "adv_labels": np.array(adv_labels), "origin_img": np.array(org_img),
+                             "adv_img": np.array(adv_img)}
+                dump_dir = os.path.join(save_dir, "%d"%i)
+                with open(dump_dir, "wb") as wb:
+                    pickle.dump(dump_data, wb)
+
+                total_org_labels += org_labels
+                total_adv_labels += adv_labels
+                total_org_img += org_img
+                total_adv_img += adv_img
+
+                org_labels = []
+                adv_labels = []
+                org_img = []
+                adv_img = []
+
+
+
+        ee_time = time.time()
+        print "total time cost: %ds" % (ee_time - ss_time)
+
+        dump_data = {"origin_lables": np.array(total_org_labels), "adv_labels": np.array(total_adv_labels), "origin_img": np.array(total_org_img),
+                             "adv_img": np.array(total_adv_img)}
+        with open("test_r_5k_data.pk", "wb") as wb:
             pickle.dump(dump_data, wb)
 

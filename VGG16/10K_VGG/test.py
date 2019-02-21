@@ -18,73 +18,32 @@ total_epoch = 512
 weight_decay = 0.0003
 dropout_rate = 0.5
 momentum_rate = 0.9
-log_save_path = './vgg_16_logs'
-model_save_path = './model/vgg_v3'
-data_dir = './data/cifar-10-batches-py'
-
-
-
-def unpickle(file):
-    with open(file, 'rb') as fo:
-        dict = pickle.load(fo)
-    return dict
-
-
-
-
-def load_data_one(file):
-    batch = unpickle(file)
-    data = batch[b'data']
-    labels = batch[b'labels']
-    print("Loading %s : %d." % (file, len(data)))
-    return data, labels
-
-
-
-
-def load_data(files, data_dir, label_count):
-    global image_size, img_channels
-    data, labels = load_data_one(data_dir + '/' + files[0])
-    for f in files[1:]:
-        data_n, labels_n = load_data_one(data_dir + '/' + f)
-        data = np.append(data, data_n, axis=0)
-        labels = np.append(labels, labels_n, axis=0)
-    labels = np.array([[float(i == label) for i in range(label_count)] for label in labels])
-    data = data.reshape([-1, img_channels, image_size, image_size])
-    data = data.transpose([0, 2, 3, 1])
-    return data, labels
-
-
+log_save_path = '../vgg_16_logs'
+model_dir = '../../model/vgg_10k'
+data_dir = '../../data/result/10K_data'
 
 
 def prepare_data():
     print("======Loading data======")
-    # download_data()
-    image_dim = image_size * image_size * img_channels
-    meta = unpickle(data_dir + '/batches.meta')
+
+    with open(data_dir, 'rb') as r:
+        data_dict = pickle.load(r)
+
+    org_img = data_dict['origin_img']
+    adv_img = data_dict['adv_img']
+    org_labels = data_dict['origin_labels']
+    adv_labels = data_dict['adv_labels']
+
+    test_data = np.array(adv_img.tolist() + org_img.tolist()).astype(float)
+    test_labels = np.array(org_labels.tolist() + org_labels.tolist()).astype(float)
 
 
-    print(meta)
-    label_names = meta[b'label_names']
-    label_count = len(label_names)
-    train_files = ['data_batch_%d' % d for d in range(1, 6)]
-    train_data, train_labels = load_data(train_files, data_dir, label_count)
-    test_data, test_labels = load_data(['test_batch'], data_dir, label_count)
-
-
-    print("Train data:", np.shape(train_data), np.shape(train_labels))
-    print("Test data :", np.shape(test_data), np.shape(test_labels))
-    print("======Load finished======")
-
-
-    print("======Shuffling data======")
-    indices = np.random.permutation(len(train_data))
-    train_data = train_data[indices]
-    train_labels = train_labels[indices]
     print("======Prepare Finished======")
 
+    print test_data.shape
+    print test_labels.shape
 
-    return train_data, train_labels, test_data, test_labels
+    return test_data, test_labels
 
 
 
@@ -178,22 +137,25 @@ def learning_rate_schedule(epoch_num):
 
 
 
-def run_testing(sess, ep):
-    acc = 0.0
-    loss = 0.0
+def run_testing(sess):
     pre_index = 0
     add = 1000
-    for it in range(10):
+
+    acc = 0
+    for it in range(9):
+        print "iter: %d" % it
         batch_x = test_x[pre_index:pre_index+add]
         batch_y = test_y[pre_index:pre_index+add]
         pre_index = pre_index + add
         loss_, acc_  = sess.run([cross_entropy, accuracy],
                                 feed_dict={x: batch_x, y_: batch_y, keep_prob: 1.0, train_flag: False})
-        loss += loss_ / 10.0
-        acc += acc_ / 10.0
-    summary = tf.Summary(value=[tf.Summary.Value(tag="test_loss", simple_value=loss),
-                                tf.Summary.Value(tag="test_accuracy", simple_value=acc)])
-    return acc, loss, summary
+        print "loss: %.4f, acc: %.4f" % (loss_, acc_)
+        if it < 8:
+            acc += acc_*1000/8526
+        else:
+            acc += acc_*526/8526
+    print "total acc : %.4f" % acc
+
 
 
 
@@ -201,11 +163,7 @@ def run_testing(sess, ep):
 if __name__ == '__main__':
 
 
-    train_x, train_y, test_x, test_y = prepare_data()
-
-    # print "max, min: ", np.max(train_x), np.min(train_x)
-    train_x, test_x = data_preprocessing(train_x, test_x)
-
+    test_x, test_y = prepare_data()
 
     # define placeholder x, y_ , keep_prob, learning_rate
     x = tf.placeholder(tf.float32,[None, image_size, image_size, 3])
@@ -328,76 +286,10 @@ if __name__ == '__main__':
 
     with tf.Session() as sess:
 
+        # sess.run(tf.global_variables_initializer())
+        print "load model"
+        saver = tf.train.Saver()
+        saver.restore(sess, tf.train.latest_checkpoint(model_dir))
+        print "load finished"
 
-        sess.run(tf.global_variables_initializer())
-        summary_writer = tf.summary.FileWriter(log_save_path,sess.graph)
-
-
-        # epoch = 164
-        # make sure [bath_size * iteration = data_set_number]
-
-
-        for ep in range(1, total_epoch+1):
-            time_start = time.time()
-
-            lr = learning_rate_schedule(ep)
-            pre_index = 0
-            train_acc = 0.0
-            train_loss = 0.0
-            start_time = time.time()
-
-
-            print("\n epoch %d/%d:" % (ep, total_epoch))
-
-
-            for it in range(1, iterations+1):
-                batch_x = train_x[pre_index:pre_index+batch_size]
-                batch_y = train_y[pre_index:pre_index+batch_size]
-
-
-                batch_x = data_augmentation(batch_x)
-
-
-                _, batch_loss = sess.run([train_step, cross_entropy],
-                                         feed_dict={x: batch_x, y_: batch_y, keep_prob: dropout_rate,
-                                                    learning_rate: lr, train_flag: True})
-                batch_acc = accuracy.eval(feed_dict={x: batch_x, y_: batch_y, keep_prob: 1.0, train_flag: True})
-
-
-                train_loss += batch_loss
-                train_acc += batch_acc
-                pre_index += batch_size
-
-
-                if it == iterations:
-                    train_loss /= iterations
-                    train_acc /= iterations
-
-
-                    loss_, acc_ = sess.run([cross_entropy, accuracy],
-                                           feed_dict={x: batch_x, y_: batch_y, keep_prob: 1.0, train_flag: True})
-                    train_summary = tf.Summary(value=[tf.Summary.Value(tag="train_loss", simple_value=train_loss),
-                                               tf.Summary.Value(tag="train_accuracy", simple_value=train_acc)])
-
-
-                    val_acc, val_loss, test_summary = run_testing(sess, ep)
-
-
-                    summary_writer.add_summary(train_summary, ep)
-                    summary_writer.add_summary(test_summary, ep)
-                    summary_writer.flush()
-
-
-                    print("iteration: %d/%d, cost_time: %ds, train_loss: %.4f, "
-                          "train_acc: %.4f, test_loss: %.4f, test_acc: %.4f"
-                          % (it, iterations, int(time.time()-start_time), train_loss, train_acc, val_loss, val_acc))
-                else:
-                    print("iteration: %d/%d, train_loss: %.4f, train_acc: %.4f"
-                          % (it, iterations, train_loss / it, train_acc / it))
-
-            time_end = time.time()
-            print "time cost: %d s" % (time_end - time_start)
-
-
-        save_path = saver.save(sess, model_save_path)
-        print("Model saved in file: %s" % save_path)
+        run_testing(sess)

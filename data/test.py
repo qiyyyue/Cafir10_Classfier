@@ -4,9 +4,8 @@ import tensorflow as tf
 import numpy as np
 
 if __name__ == '__main__':
-    for i in range(100):
-        demo_target = random.randint(0, 9)
-        print demo_target
+    for i in range(1000, 1, -1):
+        print i
 
     # target = 6
     #
